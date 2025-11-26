@@ -1,0 +1,71 @@
+name: Terraform Deploy (LocalStack Real)
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    env:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    
+    services:
+      localstack:
+        image: localstack/localstack:2.3
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: s3
+          DEBUG: 1
+        options: >-
+          --health-cmd="curl -f http://localhost:4566/_localstack/health || exit 1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+          --health-start-period=10s
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      
+      - name: Wait for LocalStack
+        run: |
+          echo "Esperando LocalStack..."
+          for i in {1..30}; do
+            if curl -f http://localhost:4566/_localstack/health 2>/dev/null | grep -q '"s3": "available"'; then
+              echo "✅ LocalStack listo"
+              exit 0
+            fi
+            echo "Intento $i/30..."
+            sleep 2
+          done
+          echo "❌ LocalStack no arrancó"
+          exit 1
+      
+      - name: Terraform init
+        working-directory: infra
+        run: terraform init -backend=false
+      
+      - name: Terraform plan
+        working-directory: infra
+        run: terraform plan -input=false -out=tfplan
+      
+      - name: Terraform apply
+        working-directory: infra
+        run: terraform apply -input=false -auto-approve tfplan
+      
+      - name: Verify S3 bucket creation
+        run: |
+          echo "📦 Listando buckets en LocalStack..."
+          pip install awscli --break-system-packages
+          aws --endpoint-url=http://localhost:4566 s3 ls
+          echo "✅ Bucket creado correctamente"
